@@ -4,6 +4,7 @@ Simulates sensor readings from a lithium-ion cell production line.
 Each cell goes through: Formation -> Aging -> Final Test stages.
 Sensors: voltage (V), temperature (C), internal resistance (mOhm), capacity (Ah)
 49,500 rows across 500 cells x 3 stages x 33 cycles each
+15 cells simulate a defective electrode lot (15% out-of-spec rate vs 3% baseline)
 """
 import os
 import random
@@ -46,6 +47,8 @@ OPERATORS = ["OP_01", "OP_02", "OP_03", "OP_04", "OP_05"]
 N_CELLS = 500
 N_CYCLES = 33
 ANOMALY_RATE = 0.03  # 3% of readings are injected out-of-spec events
+DEFECT_RATE = 0.15   # a defective batch: these cells drift out of spec far more often
+DEFECTIVE_CELLS = set(random.Random(7).sample(range(1, 501), 15))  # 15 cells from a bad electrode lot
 
 
 def generate_reading(stage, cell_id, cycle, ts, inject_anomaly=False):
@@ -72,7 +75,8 @@ def main():
     for cell_id in range(1, N_CELLS + 1):
         for stage in STAGES:
             for cycle in range(1, N_CYCLES + 1):
-                inject = random.random() < ANOMALY_RATE
+                rate = DEFECT_RATE if cell_id in DEFECTIVE_CELLS else ANOMALY_RATE
+                inject = random.random() < rate
                 rows.append(generate_reading(stage, cell_id, cycle, ts, inject))
                 ts += timedelta(minutes=random.randint(2, 6))
 

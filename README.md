@@ -6,6 +6,10 @@ End-to-end quality control pipeline for simulated lithium-ion cell production. S
 
 Cell production lines generate thousands of sensor readings per shift across formation, aging, and final test. A drifting cell that slips past QC means a scrapped pack later, or a field failure. Engineers need two things fast: which cells are out of control, and which stage or line is causing it.
 
+## Result
+
+Of 500 cells: 395 PASS, 91 REVIEW, 14 FAIL. The pipeline flagged 14 of the 15 cells from the defective lot as FAIL and failed no healthy cell. The one it missed landed in REVIEW, so it still gets a second look.
+
 ## Architecture
 
 ```
@@ -35,6 +39,7 @@ app.py                Flask API (5 JSON endpoints)  ->  templates/index.html  D3
 - Sensors: `voltage` (V), `temperature_c` (C), `internal_resistance` (mOhm), `capacity_ah` (Ah)
 - Context: `cell_id`, `stage`, `cycle`, `timestamp`, `line_id`, `operator_id`
 - 3% of readings are injected out-of-spec events (3.5 to 5 sigma) to test detection
+- 15 cells simulate a defective electrode lot (15% out-of-spec rate)
 - Yield rule: anomaly rate above 10% is FAIL, above 5% is REVIEW, otherwise PASS
 
 ## Setup
@@ -62,7 +67,7 @@ python app.py            # http://localhost:5052
 pytest tests/ -v --cov=app
 ```
 
-Tests run against the real Gold layer and check business rules, not just status codes: yield counts add up to 500 cells, every reading is accounted for, control limits are ordered, statuses match thresholds, aging runs hotter than formation, and capacity drops across stages.
+Tests run against the real Gold layer and check business rules, not just status codes: yield counts add up to 500 cells, the defective lot is caught with no healthy cell failed, every reading is accounted for, control limits are ordered, statuses match thresholds, aging runs hotter than formation, and capacity drops across stages.
 
 ## What's next
 

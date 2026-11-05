@@ -149,3 +149,12 @@ def test_sensor_avg_within_limits(client):
 def test_capacity_degrades_across_stages(client):
     caps = {r["stage"]: r["avg_capacity"] for r in get(client, "/api/sensor_distribution")}
     assert caps["formation"] > caps["aging"] > caps["final_test"]
+
+
+# Defective batch detection
+def test_defective_lot_is_caught(client):
+    import generate_data
+    defective = {f"CELL_{i:04d}" for i in generate_data.DEFECTIVE_CELLS}
+    failed = {r["cell_id"] for r in get(client, "/api/cell_yield") if r["yield_status"] == "FAIL"}
+    assert len(failed & defective) >= 12   # at least 80% of the bad lot flagged FAIL
+    assert not failed - defective          # no healthy cell is failed
