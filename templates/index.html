@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Battery Cell QC Dashboard</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.8.5/d3.min.js"></script>
+<style>
+  :root{--blue:#0d47a1;--red:#b71c1c;--green:#1b5e20;--amber:#e65100;--purple:#4a148c;
+        --bg:#f0f2f5;--card:#fff;--text:#1a1a2e;--muted:#546e7a;--border:#e0e0e0;}
+  *{box-sizing:border-box;margin:0;padding:0;}
+  body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:var(--bg);color:var(--text);}
+  header{background:var(--blue);color:#fff;padding:14px 32px;}
+  header h1{font-size:1.05rem;font-weight:700;}
+  header p{font-size:.75rem;opacity:.8;margin-top:2px;}
+  .container{max-width:1280px;margin:0 auto;padding:20px 24px;}
+  .tiles{display:grid;grid-template-columns:repeat(5,1fr);gap:14px;margin-bottom:24px;}
+  .tile{background:var(--card);border-radius:8px;padding:14px 16px;box-shadow:0 1px 3px rgba(0,0,0,.08);}
+  .tile .label{font-size:.65rem;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin-bottom:5px;}
+  .tile .value{font-size:1.55rem;font-weight:700;}
+  .pass .value{color:var(--green);} .fail .value{color:var(--red);} .warn .value{color:var(--amber);}
+  .blue .value{color:var(--blue);} .purple .value{color:var(--purple);}
+  .grid-2{display:grid;grid-template-columns:1fr 1fr;gap:18px;margin-bottom:18px;}
+  .card{background:var(--card);border-radius:8px;padding:18px 20px;box-shadow:0 1px 3px rgba(0,0,0,.08);}
+  .card h2{font-size:.85rem;font-weight:700;margin-bottom:3px;}
+  .card .sub{font-size:.7rem;color:var(--muted);margin-bottom:14px;}
+  .axis text{font-size:9.5px;fill:var(--muted);} .axis line,.axis path{stroke:var(--border);}
+  .tooltip{position:fixed;background:#fff;border:1px solid var(--border);border-radius:6px;padding:8px 12px;
+           font-size:11.5px;pointer-events:none;box-shadow:0 2px 10px rgba(0,0,0,.12);opacity:0;z-index:9999;}
+  .bar{cursor:pointer;} .bar:hover{opacity:.8;}
+  @media (max-width:800px){.tiles{grid-template-columns:repeat(2,1fr);}.grid-2{grid-template-columns:1fr;}}
+</style>
+</head>
+<body>
+<header>
+  <h1>Battery Cell Manufacturing QC Dashboard</h1>
+  <p>Bronze/Silver/Gold DuckDB pipeline &middot; Isolation Forest + SPC anomaly detection &middot; Flask &middot; D3.js</p>
+</header>
+<div class="container">
+  <div class="tiles">
+    <div class="tile blue"><div class="label">Total Cells</div><div class="value" id="t-cells">--</div></div>
+    <div class="tile pass"><div class="label">Pass</div><div class="value" id="t-pass">--</div></div>
+    <div class="tile warn"><div class="label">Review</div><div class="value" id="t-review">--</div></div>
+    <div class="tile fail"><div class="label">Fail</div><div class="value" id="t-fail">--</div></div>
+    <div class="tile purple"><div class="label">Avg Anomaly Rate</div><div class="value" id="t-anomaly">--</div></div>
+  </div>
+  <div class="grid-2">
+    <div class="card"><h2>Anomaly Rate by Stage and Line</h2>
+      <div class="sub">Out-of-control rate per production stage and line</div><div id="chart-spc"></div></div>
+    <div class="card"><h2>Daily Anomaly Trend</h2>
+      <div class="sub">Anomaly rate across formation, aging, and final test</div><div id="chart-trend"></div></div>
+  </div>
+  <div class="grid-2">
+    <div class="card"><h2>Cells Flagged for Review</h2>
+      <div class="sub">Top 30 cells by anomaly rate, colored by yield status</div><div id="chart-yield"></div></div>
+    <div class="card"><h2>Voltage SPC Control Chart</h2>
+      <div class="sub">Average voltage against 3-sigma UCL/LCL per stage</div><div id="chart-voltage"></div></div>
+  </div>
+</div>
+<div class="tooltip" id="tooltip"></div>
+<script>
+const tip=d3.select("#tooltip");
+const showTip=(h,e)=>tip.html(h).style("opacity",1).style("left",(e.clientX+14)+"px").style("top",(e.clientY-32)+"px");
+const hideTip=()=>tip.style("opacity",0);
+const W=380,H=220;
+
+fetch("/api/summary").then(r=>r.json()).then(d=>{
+  t("t-cells",d.total_cells);t("t-pass",d.pass_count);t("t-review",d.review_count);t("t-fail",d.fail_count);
+  document.getElementById("t-anomaly").textContent=(+d.avg_anomaly_rate_pct).toFixed(1)+"%";
+});
+function t(id,v){document.getElementById(id).textContent=(+v).toLocaleString();}
+
+fetch("/api/spc_by_stage").then(r=>r.json()).then(data=>{
+  const stages=[...new Set(data.map(d=>d.stage))], lines=[...new Set(data.map(d=>d.line_id))];
+  const ml=44,mr=10,mt=8,mb=46,w=W-ml-mr,h=H-mt-mb;
+  const g=d3.select("#chart-spc").append("svg").attr("width",W).attr("height",H).append("g").attr("transform",`translate(${ml},${mt})`);
+  const x0=d3.scaleBand().domain(stages).range([0,w]).paddingInner(.25);
+  const x1=d3.scaleBand().domain(lines).range([0,x0.bandwidth()]).padding(.08);
+  const y=d3.scaleLinear().domain([0,d3.max(data,d=>d.anomaly_rate_pct)*1.2]).range([h,0]);
+  const c={"LINE_A":"#0d47a1","LINE_B":"#1b5e20","LINE_C":"#e65100"};
+  g.append("g").attr("transform",`translate(0,${h})`).call(d3.axisBottom(x0).tickSize(0)).attr("class","axis");
+  g.append("g").call(d3.axisLeft(y).ticks(5).tickFormat(d=>d+"%")).attr("class","axis");
+  g.selectAll(".bar").data(data).join("rect").attr("class","bar")
+   .attr("x",d=>x0(d.stage)+x1(d.line_id)).attr("y",d=>y(d.anomaly_rate_pct))
+   .attr("width",x1.bandwidth()).attr("height",d=>h-y(d.anomaly_rate_pct)).attr("fill",d=>c[d.line_id]).attr("rx",2)
+   .on("mouseover",(e,d)=>showTip(`<b>${d.stage} / ${d.line_id}</b><br>Anomaly rate: ${d.anomaly_rate_pct}%<br>Readings: ${d.total_readings}`,e))
+   .on("mouseout",hideTip);
+  const leg=g.append("g").attr("transform",`translate(0,${h+26})`);
+  lines.forEach((l,i)=>{leg.append("rect").attr("x",i*80).attr("width",10).attr("height",10).attr("fill",c[l]);
+    leg.append("text").attr("x",i*80+14).attr("y",9).text(l).attr("font-size","9px").attr("fill","#555");});
+});
+
+fetch("/api/anomaly_trend").then(r=>r.json()).then(data=>{
+  const parse=d3.timeParse("%Y-%m-%d"); data.forEach(d=>d._d=parse(d.day_bucket));
+  const stages=[...new Set(data.map(d=>d.stage))];
+  const ml=38,mr=10,mt=8,mb=28,w=W-ml-mr,h=H-mt-mb;
+  const g=d3.select("#chart-trend").append("svg").attr("width",W).attr("height",H).append("g").attr("transform",`translate(${ml},${mt})`);
+  const x=d3.scaleTime().domain(d3.extent(data,d=>d._d)).range([0,w]);
+  const y=d3.scaleLinear().domain([0,d3.max(data,d=>d.anomaly_rate_pct)*1.15]).range([h,0]);
+  const c={formation:"#0d47a1",aging:"#e65100",final_test:"#1b5e20"};
+  g.append("g").attr("transform",`translate(0,${h})`).call(d3.axisBottom(x).ticks(5).tickFormat(d3.timeFormat("%b %d"))).attr("class","axis");
+  g.append("g").call(d3.axisLeft(y).ticks(5).tickFormat(d=>d+"%")).attr("class","axis");
+  stages.forEach(s=>{const pts=data.filter(d=>d.stage===s);
+    g.append("path").datum(pts).attr("fill","none").attr("stroke",c[s]).attr("stroke-width",1.5).attr("opacity",.85)
+     .attr("d",d3.line().x(d=>x(d._d)).y(d=>y(d.anomaly_rate_pct)).curve(d3.curveMonotoneX));});
+  const leg=g.append("g").attr("transform",`translate(${w-90},4)`);
+  stages.forEach((s,i)=>{leg.append("line").attr("x1",0).attr("y1",i*13).attr("x2",12).attr("y2",i*13).attr("stroke",c[s]).attr("stroke-width",2);
+    leg.append("text").attr("x",16).attr("y",i*13+4).text(s.replace("_"," ")).attr("font-size","9px").attr("fill","#555");});
+});
+
+fetch("/api/cell_yield").then(r=>r.json()).then(all=>{
+  const data=all.slice(0,30), ml=62,mr=10,mt=8,mb=26,w=W-ml-mr,h=H-mt-mb;
+  const g=d3.select("#chart-yield").append("svg").attr("width",W).attr("height",H).append("g").attr("transform",`translate(${ml},${mt})`);
+  const x=d3.scaleLinear().domain([0,d3.max(data,d=>d.anomaly_rate_pct)*1.1]).range([0,w]);
+  const y=d3.scaleBand().domain(data.map(d=>d.cell_id)).range([0,h]).padding(.18);
+  const c={PASS:"#1b5e20",REVIEW:"#e65100",FAIL:"#b71c1c"};
+  g.append("g").call(d3.axisLeft(y).tickSize(0)).attr("class","axis").selectAll("text").style("font-size","7px");
+  g.append("g").attr("transform",`translate(0,${h})`).call(d3.axisBottom(x).ticks(4).tickFormat(d=>d+"%")).attr("class","axis");
+  g.selectAll(".bar").data(data).join("rect").attr("class","bar").attr("y",d=>y(d.cell_id))
+   .attr("width",d=>x(d.anomaly_rate_pct)).attr("height",y.bandwidth()).attr("fill",d=>c[d.yield_status]).attr("rx",2)
+   .on("mouseover",(e,d)=>showTip(`<b>${d.cell_id}</b><br>Status: ${d.yield_status}<br>Anomaly rate: ${d.anomaly_rate_pct}%<br>OOC voltage: ${d.ooc_voltage_count}`,e))
+   .on("mouseout",hideTip);
+});
+
+fetch("/api/sensor_distribution").then(r=>r.json()).then(data=>{
+  const ml=46,mr=10,mt=10,mb=46,w=W-ml-mr,h=H-mt-mb;
+  const g=d3.select("#chart-voltage").append("svg").attr("width",W).attr("height",H).append("g").attr("transform",`translate(${ml},${mt})`);
+  const x=d3.scalePoint().domain(data.map(d=>d.stage)).range([20,w-20]);
+  const vals=data.flatMap(d=>[d.lcl_voltage,d.ucl_voltage]);
+  const y=d3.scaleLinear().domain([d3.min(vals)*.995,d3.max(vals)*1.005]).range([h,0]);
+  g.append("g").attr("transform",`translate(0,${h})`).call(d3.axisBottom(x).tickSize(0)).attr("class","axis");
+  g.append("g").call(d3.axisLeft(y).ticks(5).tickFormat(d=>d.toFixed(2)+"V")).attr("class","axis");
+  [["ucl_voltage","#b71c1c"],["lcl_voltage","#e65100"]].forEach(([k,col])=>
+    g.append("path").datum(data).attr("fill","none").attr("stroke",col).attr("stroke-dasharray","4,3").attr("stroke-width",1.5)
+     .attr("d",d3.line().x(d=>x(d.stage)).y(d=>y(d[k]))));
+  g.selectAll("circle").data(data).join("circle").attr("cx",d=>x(d.stage)).attr("cy",d=>y(d.avg_voltage)).attr("r",6)
+   .attr("fill","#0d47a1").attr("stroke","#fff").attr("stroke-width",1.5)
+   .on("mouseover",(e,d)=>showTip(`<b>${d.stage}</b><br>Avg: ${d.avg_voltage}V<br>UCL: ${d.ucl_voltage}V<br>LCL: ${d.lcl_voltage}V`,e))
+   .on("mouseout",hideTip);
+  const leg=g.append("g").attr("transform",`translate(0,${h+26})`);
+  [["UCL (3 sigma)","#b71c1c"],["LCL (3 sigma)","#e65100"],["Stage mean","#0d47a1"]].forEach(([l,col],i)=>{
+    leg.append("line").attr("x1",i*100).attr("y1",5).attr("x2",i*100+14).attr("y2",5).attr("stroke",col).attr("stroke-width",2);
+    leg.append("text").attr("x",i*100+18).attr("y",9).text(l).attr("font-size","9px").attr("fill","#555");});
+});
+</script>
+</body>
+</html>
